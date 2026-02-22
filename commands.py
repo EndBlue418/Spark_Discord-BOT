@@ -307,8 +307,9 @@ class AskCommand(commands.Cog):
             self.current_song[guild_id] = item
             s_title = item.get('clean_title') or source_data['title']
 
-            # 環境判定：設定正確的 FFmpeg 路徑
-            FFMPEG_EXE = "ffmpeg" if os.path.exists('/.dockerenv') else r"C:\Users\李冠霖\暫存\ffmpeg-8.0.1-essentials_build\bin\ffmpeg.exe"
+            # 🔍 自動偵測 FFmpeg：優先找系統指令 (Termux/Docker)，找不到才用 Windows 備份路徑
+            import shutil
+            FFMPEG_EXE = shutil.which("ffmpeg") or r"C:\Users\李冠霖\暫存\ffmpeg-8.0.1-essentials_build\bin\ffmpeg.exe"
 
             # 🛠️ 強化型 FFmpeg 參數：防止 IO Error、EOF 錯誤與串流中斷
             FFMPEG_OPTIONS = {
