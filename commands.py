@@ -13,17 +13,32 @@ from lyrics_engine import LyricsEngine
 # --- 1. 音樂控制面板 (MusicControlView) ---
 # ======================================================
 class MusicControlView(discord.ui.View):
-    """
-    這是一個高度互動的 Discord UI 組件。
-    它會附加在艾瑪的播放訊息下方，提供使用者即時的播放控制權，
-    省去輸入斜線指令的麻煩，並同步將動作記錄到日誌系統中。
-    """
     def __init__(self, bot, vc, cog):
-        # timeout=None 確保這個 View 在機器人運作期間永久有效，不會因為逾時而失效
         super().__init__(timeout=None)
         self.bot = bot
         self.vc = vc
         self.cog = cog
+
+        # --- [狀態初始化] 讓按鈕外觀與後端數據同步 ---
+        guild_id = vc.guild.id
+        mode = self.cog.loop_mode.get(guild_id, 0)
+        loop_labels = {0: "🔁 循環: 關閉", 1: "🔂 單曲循環", 2: "🔁 清單循環"}
+
+        # 遍歷組件，動態調整初始 Label 與顏色
+        for child in self.children:
+            if isinstance(child, discord.ui.Button):
+                # 同步循環按鈕文字
+                if child.custom_id == "emma_music_loop":
+                    child.label = loop_labels.get(mode, "🔁 循環模式")
+
+                # 同步暫停按鈕文字與顏色
+                if child.custom_id == "emma_music_toggle":
+                    if self.vc.is_paused():
+                        child.label = "▶️ 繼續播放"
+                        child.style = discord.ButtonStyle.danger
+                    else:
+                        child.label = "⏸️ 暫停"
+                        child.style = discord.ButtonStyle.primary
 
     @discord.ui.button(label="⏮️ 上一首", style=discord.ButtonStyle.secondary, custom_id="emma_music_prev")
     async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -33,41 +48,57 @@ class MusicControlView(discord.ui.View):
 
         if last_song:
             await self.bot.dispatch_log(f"⏮️ [控制面板] 使用者 {interaction.user.name} 請求回放上一首歌")
-            # 邏輯：將當前歌曲塞回排隊首位，將歷史歌曲插到最前面
             current = self.cog.current_song.get(guild_id)
             if current:
                 self.cog.queues[guild_id].insert(0, current)
 
             self.cog.queues[guild_id].insert(0, last_song)
             self.vc.stop() # 停止當前播放，藉此觸發 check_queue
-            await interaction.response.send_message("⏮️ 好的！艾瑪正在幫妳找回剛才的旋律...呢。", ephemeral=True)
+            await interaction.response.send_message("⏮️ 好的！艾瑪正在幫妳找回剛才的旋律...", ephemeral=True)
         else:
             await self.bot.dispatch_log(f"⚠️ [控制面板] {interaction.user.name} 嘗試按上一首，但歷史紀錄為空")
-            await interaction.response.send_message("🌸 艾瑪的記憶體裡找不到上一首歌的紀錄呢。", ephemeral=True)
+            await interaction.response.send_message("🌸 艾瑪的記憶體裡找不到上一首歌的紀錄...", ephemeral=True)
 
     @discord.ui.button(label="⏯️ 暫停/繼續", style=discord.ButtonStyle.primary, custom_id="emma_music_toggle")
     async def toggle_play_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         """按下按鈕：切換語音客戶端的播放或暫停狀態"""
         if self.vc.is_playing():
             self.vc.pause()
+            button.label = "▶️ 繼續播放"
+            button.style = discord.ButtonStyle.danger
             await self.bot.dispatch_log(f"⏸️ [控制面板] 使用者 {interaction.user.name} 暫停了播放")
-            await interaction.response.send_message("⏸️ 已經幫妳按下暫停鍵囉！", ephemeral=True)
+            await interaction.response.edit_message(view=self)
+            await interaction.followup.send("⏸️ 已經幫妳按下暫停鍵囉！", ephemeral=True)
         elif self.vc.is_paused():
             self.vc.resume()
+            button.label = "⏸️ 暫停"
+            button.style = discord.ButtonStyle.primary
             await self.bot.dispatch_log(f"▶️ [控制面板] 使用者 {interaction.user.name} 恢復了播放")
-            await interaction.response.send_message("▶️ 音樂繼續響起！讓旋律再次流動吧 ✨", ephemeral=True)
+            await interaction.response.edit_message(view=self)
+            await interaction.followup.send("▶️ 音樂繼續響起！讓旋律再次流動吧 ✨", ephemeral=True)
         else:
-            await interaction.response.send_message("🌸 艾瑪現在好像沒在唱歌，沒辦法暫停呢。", ephemeral=True)
+            await interaction.response.send_message("🌸 艾瑪現在好像沒在唱歌，沒辦法暫停呢~", ephemeral=True)
 
     @discord.ui.button(label="⏭️ 下一首", style=discord.ButtonStyle.secondary, custom_id="emma_music_skip")
     async def skip_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         """按下按鈕：停止當前播放以進入下一首"""
         if self.vc.is_playing() or self.vc.is_paused():
             await self.bot.dispatch_log(f"⏭️ [控制面板] 使用者 {interaction.user.name} 跳過了目前的歌曲")
-            self.vc.stop() # 停止會自動觸發 after 回調中的 check_queue
+            self.vc.stop()
             await interaction.response.send_message("⏭️ 收到！這首歌先休息，我們換下一首～ ✨", ephemeral=True)
         else:
             await interaction.response.send_message("🌸 排隊清單裡已經沒有歌可以跳過囉。", ephemeral=True)
+
+    @discord.ui.button(label="🔀 打亂", style=discord.ButtonStyle.secondary, custom_id="emma_music_shuffle")
+    async def shuffle_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild_id = interaction.guild_id
+        queue = self.cog.queues.get(guild_id, [])
+        if len(queue) > 1:
+            random.shuffle(queue)
+            await self.bot.dispatch_log(f"🔀 [控制面板] {interaction.user.name} 打亂了隊列")
+            await interaction.response.send_message("🔀 隊列已重新洗牌！", ephemeral=True)
+        else:
+            await interaction.response.send_message("🌸 沒幾首歌，不用洗牌啦～", ephemeral=True)
 
     @discord.ui.button(label="🔁 循環模式", style=discord.ButtonStyle.success, custom_id="emma_music_loop")
     async def toggle_loop_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -77,12 +108,10 @@ class MusicControlView(discord.ui.View):
         new_mode = (current_mode + 1) % 3
         self.cog.loop_mode[guild_id] = new_mode
 
-        # 更新按鈕文字以即時反應狀態
         labels = {0: "🔁 循環: 關閉", 1: "🔂 單曲循環", 2: "🔁 清單循環"}
         button.label = labels[new_mode]
 
         await self.bot.dispatch_log(f"🔄 [控制面板] 使用者 {interaction.user.name} 切換循環模式為: {labels[new_mode]}")
-        # 編輯原始訊息以反映按鈕標籤的更改
         await interaction.response.edit_message(view=self)
 
     @discord.ui.button(label="🗑️ 清空", style=discord.ButtonStyle.danger, custom_id="emma_music_clear")
@@ -104,41 +133,43 @@ class MusicControlView(discord.ui.View):
         self.cog.queues[guild_id] = []
         if self.vc:
             await self.vc.disconnect()
-
         await interaction.response.send_message("🚪 好的，艾瑪先去休息休息，期待下次再唱歌給妳聽！🌸", ephemeral=True)
 
 # ======================================================
 # --- 2. 指令核心模組 (AskCommand Cog) ---
 # ======================================================
 class AskCommand(commands.Cog):
-    """
-    這是艾瑪的「大腦」核心。
-    負責統合 AI 對話、音樂搜尋、FFmpeg 串流播放、
-    以及最重要的：進度條與歌詞同步系統。
-    """
     def __init__(self, bot, ai_engine, music_engine):
         self.bot = bot
         self.ai = ai_engine
         self.music = music_engine
         self.lyrics_engine = LyricsEngine()
 
-        # 核心數據儲存 (使用字典以支援多伺服器併發)
-        self.queues = {}       # {guild_id: [歌曲列表]}
-        self.last_played = {}  # {guild_id: 上一首曲目資訊}
-        self.current_song = {} # {guild_id: 當前播放曲目資訊}
-        self.loop_mode = {}    # {guild_id: 循環模式代碼}
+        self.queues = {}
+        self.last_played = {}
+        self.current_song = {}
+        self.loop_mode = {}
 
-        # 設定日誌格式
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger("EmmaMusic")
 
+
+    def get_loop_status(self, guild_id):
+        """根據 guild_id 獲取目前的循環模式文字描述"""
+        # 0: 正常, 1: 單曲, 2: 清單
+        mode = self.loop_mode.get(guild_id, 0)
+        mode_map = {
+            0: "正常播放",
+            1: "單曲循環中 🔂",
+            2: "清單循環中 🔁"
+        }
+        return mode_map.get(mode, "正常播放")
+
     def format_time(self, seconds):
-        """將秒數格式化為 mm:ss 顯示，例如將 125 秒轉為 02:05"""
         m, s = divmod(int(max(0, seconds)), 60)
         return f"{m:02d}:{s:02d}"
 
     async def get_ai_response(self, user_id, user_name, question, source="Slash"):
-        """統一的 AI 對話處理入口，包含日誌分發"""
         await self.bot.dispatch_log(f"💬 [{source}] {user_name}: {question}")
         try:
             answer = await self.ai.get_chat_response(str(user_id), question)
@@ -147,95 +178,91 @@ class AskCommand(commands.Cog):
             await self.bot.dispatch_log(f"💥 [AI 故障] 無法回應 {user_name}: {e}")
             return "🌸 嗚嗚...艾瑪頭好痛，暫時沒辦法回答妳..."
 
-    # ------------------------------------------------------
-    # --- 🌸 核心亮點：進度條與動態歌詞同步系統---
-    # ------------------------------------------------------
     async def lyrics_sync_task(self, vc, spotify_title, youtube_title, message):
-        """
-        1. 修正 f-string 內包含反斜線造成的初始化失敗。
-        2. 校準時間偏移，解決歌詞提前問題。
-        3. 強化翻譯救援，支援列表與特殊字串格式。
-        """
+        """確保歌詞載入後立即推送到面板"""
         guild_id = message.guild.id
+        # 抓取歌曲長度，若無則預設 4 分鐘
         duration = self.current_song.get(guild_id, {}).get('duration', 0)
 
-        lyric_dict = {}
-        sorted_times = []
-        is_lyrics_ready = False
+        # 使用字典容器確保異步任務間的數據同步
+        data_container = {
+            'lyrics': {},
+            'times': [],
+            'ready': False
+        }
 
-        # 1. 🚀 背景異步載入
         async def fetch_lyrics_background():
-            nonlocal lyric_dict, sorted_times, is_lyrics_ready
             try:
+                # 執行耗時的歌詞抓取 (在線程池中執行避免阻塞主循環)
                 data, search_logs = await self.bot.loop.run_in_executor(
                     None, self.lyrics_engine.get_dynamic_lyrics, spotify_title, youtube_title
                 )
                 if data:
-                    lyric_dict = data
-                    sorted_times = sorted(lyric_dict.keys())
-                    is_lyrics_ready = True
+                    data_container['lyrics'] = data
+                    data_container['times'] = sorted(data.keys())
+                    data_container['ready'] = True
                     for entry in search_logs:
                         await self.bot.dispatch_log(f"🔍 [歌詞搜尋] {entry}")
-                    await self.bot.dispatch_log(f"✅ [歌詞就緒] 翻譯數據已載入。")
+                    await self.bot.dispatch_log(f"✅ [同步任務] 歌詞數據已成功寫入，共 {len(data)} 句。")
+                else:
+                    await self.bot.dispatch_log(f"❌ [同步任務] 找不到這首歌的動態歌詞。")
             except Exception as e:
-                await self.bot.dispatch_log(f"⚠️ [加載失敗] {e}")
+                await self.bot.dispatch_log(f"⚠️ [同步任務失敗] {e}")
 
+        # 啟動背景抓取
         self.bot.loop.create_task(fetch_lyrics_background())
 
-        # 2. 🕰️ 時間對齊校準
-        # 調低 offset 避免歌詞提前，並精確同步啟動時刻
-        delay_offset = 0
         start_time = time.time()
-        last_second = 0
+        last_second = -1
         display_duration = duration if duration > 0 else 240
 
-        # 3. 監控迴圈
         while vc.is_connected() and (vc.is_playing() or vc.is_paused()):
             if vc.is_paused():
+                # 暫停時補償開始時間，讓進度條停住
                 start_time += 0.5
                 await asyncio.sleep(0.5)
                 continue
 
-            elapsed = (time.time() - start_time) + delay_offset
+            elapsed = (time.time() - start_time)
             current_second = int(elapsed)
 
+            # 每秒更新一次 UI (或是當歌詞準備好時立即更新)
             if current_second != last_second:
                 last_second = current_second
 
-                # --- 翻譯救援邏輯
-                current_sentence = "🌸 **正在準備伴唱...**"
+                status_text = self.get_loop_status(guild_id)
 
-                if is_lyrics_ready and lyric_dict:
+                # --- 核心顯示邏輯 ---
+                if data_container['ready'] and data_container['lyrics']:
+                    # 預設為間奏
                     current_sentence = "🎵 **(間奏中)** 🎵"
-                    for t in sorted_times:
+                    # 尋找當前時間對應的歌詞
+                    for t in data_container['times']:
                         if elapsed >= t:
-                            raw_data = lyric_dict[t]
-
-                            # 🛠️ 邏輯：先處理好文字，再塞進 f-string
+                            raw_data = data_container['lyrics'][t]
+                            # 處理格式：可能是 [原文, 翻譯] 或 字串
                             if isinstance(raw_data, list):
-                                # 將 [原文, 翻譯] 合併成帶有換行的粗體字串
-                                processed_text = "\n".join([str(line) for line in raw_data if line])
-                                current_sentence = f"**{processed_text}**"
-                            elif isinstance(raw_data, str):
-                                # 修正：在 f-string 外處理換行符號
-                                processed_text = raw_data.replace('|', '\n').replace('\\n', '\n')
-                                current_sentence = f"**{processed_text}**"
+                                current_sentence = "\n".join([f"**{str(line).strip()}**" for line in raw_data if line])
                             else:
-                                current_sentence = f"**{str(raw_data)}**"
+                                processed = str(raw_data).replace('|', '\n').replace('\\n', '\n')
+                                current_sentence = f"**{processed}**"
                         else:
+                            # 找到第一個比現在時間大的就跳出，保留最後一個比現在小的
                             break
+                else:
+                    # 還沒準備好時顯示的預設文字
+                    current_sentence = "🌸 **艾瑪正在同步動態歌詞與翻譯...**"
 
-                # --- 進度條 UI (🔘) ---
+                # 進度條渲染
                 bar_len = 14
                 prog = min(elapsed / display_duration, 1.0)
                 filled = int(prog * bar_len)
                 bar_ui = "▬" * filled + "🔘" + "─" * (max(0, bar_len - filled))
-
                 time_label = f"{self.format_time(elapsed)} / {self.format_time(duration)}" if duration > 0 else self.format_time(elapsed)
 
-                # 4. 渲染 Embed
+                # 建立新的 Embed
                 embed = discord.Embed(
-                    title="🌸 伴唱同步中",
+                    title=f"🌸 伴唱中 | {status_text}",
                     description=f"**『 {spotify_title} 』**\n\n{current_sentence}\n\n{bar_ui}\n`{time_label}`",
                     color=0xffb6c1,
                     timestamp=datetime.datetime.now()
@@ -243,158 +270,118 @@ class AskCommand(commands.Cog):
                 embed.set_footer(text="享受這段旋律吧！ ✨")
 
                 try:
-                    await message.edit(embed=embed)
+                    # 每次更新都重新傳入 MusicControlView 確保按鈕狀態（暫停/繼續）即時同步
+                    view = MusicControlView(self.bot, vc, self)
+                    await message.edit(embed=embed, view=view)
                 except Exception:
+                    # 如果訊息被刪除或出錯則退出循環
                     break
 
             await asyncio.sleep(0.5)
 
-    # ------------------------------------------------------
-    # --- 🎵 音樂排程管理邏輯 (Music Dispatcher) ---
-    # ------------------------------------------------------
-
     def check_queue(self, interaction, vc):
-        """
-        當一首歌播放結束後由 FFmpeg 自動觸發。
-        負責根據目前的循環模式 (Loop Mode) 來挑選下一首曲目。
-        """
+        """音樂排程管理邏輯 (Music Dispatcher)"""
         guild_id = interaction.guild_id
-        mode = self.loop_mode.get(guild_id, 0) # 0:無, 1:單曲, 2:清單
+        mode = self.loop_mode.get(guild_id, 0)
         current = self.current_song.get(guild_id)
+        queue = self.queues.get(guild_id, [])
 
         next_item = None
-
-        # 決定下一首
         if mode == 1 and current:
             next_item = current
-            self.bot.dispatch_log(f"🔂 [循環] 正在執行單曲循環：{current['query']}")
+            self.bot.dispatch_log(f"🔂 [循環] 單曲循環啟動: {current.get('query')}")
         elif mode == 2 and current:
-            if guild_id in self.queues:
-                self.queues[guild_id].append(current) # 播完後插回清單尾端
-                next_item = self.queues[guild_id].pop(0) if self.queues[guild_id] else None
-                self.bot.dispatch_log(f"🔁 [循環] 正在執行清單循環")
+            queue.append(current)
+            if queue:
+                next_item = queue.pop(0)
+            self.bot.dispatch_log(f"🔁 [循環] 清單循環運作中")
         else:
-            if guild_id in self.queues and self.queues[guild_id]:
-                next_item = self.queues[guild_id].pop(0)
+            if queue:
+                next_item = queue.pop(0)
 
-        # 執行下一首播放
         if next_item:
             self.bot.loop.create_task(self.play_music_task(interaction, vc, next_item))
         else:
             self.current_song[guild_id] = None
-            self.bot.dispatch_log(f"🏁 [播放結束] 伺服器 {interaction.guild.name} 的播放隊列已清空")
+            self.bot.dispatch_log(f"🏁 [播放結束] {interaction.guild.name} 的隊列已播放完畢。")
 
     async def play_music_task(self, interaction, vc, item):
-        """
-        音樂播放的主執行任務。
-        包含：URL 解析、FFmpeg 裝甲參數初始化、訊息發送、同步任務掛載。
-        """
+        """音樂播放主執行任務"""
         try:
             guild_id = interaction.guild_id
-
-            # 歷史紀錄保存 (供 /prev 指令使用)
             if self.current_song.get(guild_id) and self.current_song.get(guild_id) != item:
                 self.last_played[guild_id] = self.current_song[guild_id]
 
-            # 抓取 YouTube 數據
             source_data = await self.music.get_yt_source(item['query'])
             if not source_data:
                 await self.bot.dispatch_log(f"❌ [播放異常] 無法獲取音訊來源：{item['query']}")
                 return
 
-            # 更新曲目狀態
             item['duration'] = source_data.get('duration', 0)
             self.current_song[guild_id] = item
             s_title = item.get('clean_title') or source_data['title']
 
-            # 🔍 自動偵測 FFmpeg：優先找系統指令 (Termux/Docker)，找不到才用 Windows 備份路徑
+            # FFmpeg 配置 (保持原樣)
             import shutil
             FFMPEG_EXE = shutil.which("ffmpeg") or r"C:\Users\李冠霖\暫存\ffmpeg-8.0.1-essentials_build\bin\ffmpeg.exe"
-
-            # 🛠️ 強化型 FFmpeg 參數：防止 IO Error、EOF 錯誤與串流中斷
             FFMPEG_OPTIONS = {
-                'before_options': (
-                    '-reconnect 1 '
-                    '-reconnect_at_eof 1 '        # 遇到檔案結尾強制重連 (修復 IO Error)
-                    '-reconnect_streamed 1 '
-                    '-reconnect_delay_max 5 '
-                    '-headers "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                    'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" '
-                    '-probesize 10M '             # 增加探測緩衝
-                    '-analyzeduration 0'
-                ),
+                'before_options': '-reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 -probesize 10M -analyzeduration 0',
                 'options': '-vn',
             }
 
-            # 建立音訊來源
             audio_source = discord.FFmpegPCMAudio(source_data['url'], executable=FFMPEG_EXE, **FFMPEG_OPTIONS)
-
-            # 開始播放並綁定後續動作
             vc.play(audio_source, after=lambda e: self.check_queue(interaction, vc))
-            await self.bot.dispatch_log(f"🎵 [音樂啟動] 正在播放：{s_title} | 預計時長：{self.format_time(item['duration'])}")
 
-            # 發送 UI 面板
+            # --- 初始發送面板 ---
             view = MusicControlView(self.bot, vc, self)
+            status = self.get_loop_status(guild_id)
             embed = discord.Embed(
-                title="🎵 正在播放",
-                description=f"**[{s_title}]**\n\n*🌸 艾瑪正在為妳啟動動態歌詞與翻譯...*",
+                title=f"🌸 伴唱中 | {status}",
+                description=f"**『 {s_title} 』**\n\n🌸 **艾瑪正在準備歌詞，請稍候...**",
                 color=0xffb6c1
             )
 
-            # 🚀 關鍵點：獲取傳回的 message 物件以啟動同步循環
-            msg = None
+            # 判斷是用回應還是直接發送
             if not interaction.response.is_done():
                 msg = await interaction.followup.send(embed=embed, view=view)
             else:
                 msg = await interaction.channel.send(embed=embed, view=view)
 
+            # 啟動同步任務
             if msg:
                 self.bot.loop.create_task(self.lyrics_sync_task(vc, s_title, source_data['title'], msg))
 
         except Exception as e:
             await self.bot.dispatch_log(f"💥 [播放任務崩潰] {e}")
 
-    # ======================================================
-    # --- 3. 斜線指令系統 (Slash Commands) ---
-    # ======================================================
-
+    # --- 斜線指令部分 ---
     @app_commands.command(name="ask", description="向艾瑪提問任何事 ✨")
     async def ask(self, interaction: discord.Interaction, question: str):
-        """讓使用者與艾瑪對話的指令"""
         await interaction.response.defer(thinking=True)
-        answer = await self.get_ai_response(interaction.user.id, interaction.user.name, question, source="Slash")
+        answer = await self.get_ai_response(interaction.user.id, interaction.user.name, question)
         await interaction.followup.send(answer)
 
-    @app_commands.command(name="play", description="點燃妳的音樂！支援 Spotify 連結、YouTube 連結或直接搜尋。")
-    @app_commands.describe(input_str="輸入歌曲標題、YouTube 網址或 Spotify 網址")
+    @app_commands.command(name="play", description="播放妳的音樂！")
     async def play(self, interaction: discord.Interaction, input_str: str):
-        """主要的音樂點歌指令"""
         await interaction.response.defer(thinking=True)
-
-        # 1. 確保艾瑪在語音頻道內
         vc = interaction.guild.voice_client
         if not vc:
             if interaction.user.voice:
                 vc = await interaction.user.voice.channel.connect()
-                await self.bot.dispatch_log(f"🎤 [語音進入] 艾瑪已應邀進入頻道：{interaction.user.voice.channel.name}")
             else:
                 return await interaction.followup.send("🌸 妳得先進去語音頻道，我才找得到妳呀！")
 
         guild_id = interaction.guild_id
-        if guild_id not in self.queues:
-            self.queues[guild_id] = []
+        if guild_id not in self.queues: self.queues[guild_id] = []
 
-        # 2. 解析並加入清單
         added_count = 0
         if "spotify.com" in input_str:
             tracks = self.music.get_spotify_tracks(input_str)
-            for t in tracks:
-                self.queues[guild_id].append({'query': t, 'clean_title': t})
+            for t in tracks: self.queues[guild_id].append({'query': t, 'clean_title': t})
             added_count = len(tracks)
         elif "list=" in input_str:
             urls = await self.music.get_yt_playlist_urls(input_str)
-            for u in urls:
-                self.queues[guild_id].append({'query': u, 'clean_title': None})
+            for u in urls: self.queues[guild_id].append({'query': u, 'clean_title': None})
             added_count = len(urls)
         else:
             self.queues[guild_id].append({'query': input_str, 'clean_title': None})
@@ -402,60 +389,89 @@ class AskCommand(commands.Cog):
 
         await self.bot.dispatch_log(f"📥 [清單更新] {interaction.user.name} 加入了 {added_count} 首歌")
 
-        # 3. 如果目前沒在唱歌，立即啟動播放任務
         if not vc.is_playing() and not vc.is_paused():
             if self.queues[guild_id]:
                 target = self.queues[guild_id].pop(0)
                 await self.play_music_task(interaction, vc, target)
-                await interaction.followup.send(f"🌸 音樂啟動！成功將 {added_count} 首歌加入排隊清單 ✨")
+                await interaction.followup.send(f"🌸 音樂啟動！成功將 {added_count} 首歌加入清單 ✨")
         else:
             await interaction.followup.send(f"✅ 好的！已幫妳把 {added_count} 首歌加入排隊囉！")
 
+    @app_commands.command(name="previous", description="⏮️ 播放上一首歌曲")
+    async def previous(self, interaction: discord.Interaction):
+        """回到上一首歌的指令版本"""
+        guild_id = interaction.guild_id
+        last_song = self.last_played.get(guild_id)
+
+        if last_song:
+            await self.bot.dispatch_log(f"⏮️ [指令回放] {interaction.user.name} 請求回放上一首歌")
+            current = self.current_song.get(guild_id)
+            if current:
+                self.queues[guild_id].insert(0, current)
+            self.queues[guild_id].insert(0, last_song)
+
+            vc = interaction.guild.voice_client
+            if vc: vc.stop()
+            await interaction.response.send_message("⏮️ 正在為妳找回剛才的旋律...", ephemeral=True)
+        else:
+            await interaction.response.send_message("🌸 艾瑪記不得上一首歌是什麼了...", ephemeral=True)
+
     @app_commands.command(name="skip", description="跳過這首歌 ⏭️")
-    @app_commands.describe(target="想要跳轉到的歌曲序號 (例如輸入 3 直接播排隊中第 3 首)")
     async def skip(self, interaction: discord.Interaction, target: int = None):
-        """跳過目前曲目或精確跳轉"""
         vc = interaction.guild.voice_client
         guild_id = interaction.guild_id
-
-        if not vc or not (vc.is_playing() or vc.is_paused()):
-            return await interaction.response.send_message("🌸 艾瑪目前沒有在唱歌，沒辦法跳過唷。", ephemeral=True)
+        if not vc: return await interaction.response.send_message("🌸 艾瑪不在頻道裡唷。", ephemeral=True)
 
         if target is not None:
             if guild_id in self.queues and 1 <= target <= len(self.queues[guild_id]):
-                removed = target - 1
-                for _ in range(removed): self.queues[guild_id].pop(0)
+                for _ in range(target - 1): self.queues[guild_id].pop(0)
                 vc.stop()
-                await self.bot.dispatch_log(f"🚀 [跳轉] {interaction.user.name} 強制跳轉，跳過前 {removed} 首")
-                await interaction.response.send_message(f"🚀 收到！跳過中間曲目，直接為妳播放第 {target} 首歌！")
+                await self.bot.dispatch_log(f"🚀 [跳轉] {interaction.user.name} 強制跳轉至第 {target} 首")
+                await interaction.response.send_message(f"🚀 收到！直接為妳跳轉到第 {target} 首歌！")
             else:
-                await interaction.response.send_message("🌸 序號超出範圍了啦！", ephemeral=True)
+                await interaction.response.send_message("🌸 找不到那個序號呢~", ephemeral=True)
         else:
             vc.stop()
-            await interaction.response.send_message("⏭️ 下一首！出發～ ✨")
+            await interaction.response.send_message("⏭️ 下一首！艾瑪已經換片囉～ ✨")
+
+    @app_commands.command(name="shuffle", description="🔀 打亂目前的播放隊列")
+    async def shuffle(self, interaction: discord.Interaction):
+        """指令版：隨機洗牌"""
+        guild_id = interaction.guild_id
+        if guild_id in self.queues and len(self.queues[guild_id]) > 1:
+            random.shuffle(self.queues[guild_id])
+            await self.bot.dispatch_log(f"🔀 [指令打亂] {interaction.user.name} 打亂了隊列")
+            await interaction.response.send_message(f"🔀 已打亂目前的 **{len(self.queues[guild_id])}** 首歌囉！")
+        else:
+            await interaction.response.send_message("🌸 隊列裡沒什麼歌可以打亂了~", ephemeral=True)
+
+    @app_commands.command(name="loop", description="🔁 切換循環模式 (關閉/單曲/清單)")
+    async def loop_mode_cmd(self, interaction: discord.Interaction):
+        """指令版：循環模式切換"""
+        guild_id = interaction.guild_id
+        current = self.loop_mode.get(guild_id, 0)
+        new_mode = (current + 1) % 3
+        self.loop_mode[guild_id] = new_mode
+
+        modes = {0: "❌ 關閉", 1: "🔂 單曲循環", 2: "🔁 清單循環"}
+        await self.bot.dispatch_log(f"🔄 [指令循環] {interaction.user.name} 將模式設定為 {modes[new_mode]}")
+        await interaction.response.send_message(f"🔁 循環模式已切換為：**{modes[new_mode]}**")
 
     @app_commands.command(name="queue", description="查看當前的點歌清單 🎵")
     async def queue(self, interaction: discord.Interaction):
-        """顯示目前正在等待播放的前 10 首歌曲"""
         q = self.queues.get(interaction.guild_id, [])
-        if not q:
-            return await interaction.response.send_message("🌸 目前排隊清單空蕩蕩的，快去點歌吧！")
-
+        if not q: return await interaction.response.send_message("🌸 目前排隊清單空蕩蕩的。")
         display = "\n".join([f"**{i+1}.** {(x['clean_title'] or x['query'])[:45]}..." for i, x in enumerate(q[:10])])
         embed = discord.Embed(title="🎵 待播放清單 (前 10 首)", description=display, color=0xffb6c1)
-        if len(q) > 10:
-            embed.set_footer(text=f"還有額外 {len(q)-10} 首歌正在候選中...")
         await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="leave", description="停止播放並讓艾瑪休息 🚪")
     async def leave(self, interaction: discord.Interaction):
-        """斷開連線並清空隊列"""
         vc = interaction.guild.voice_client
         if vc:
             self.queues[interaction.guild_id] = []
             await vc.disconnect()
-            await interaction.response.send_message("🚪 艾瑪先退下了，有音樂需要隨時叫我！🌸")
-            await self.bot.dispatch_log(f"🚪 [中斷] {interaction.user.name} 結束了播放會話")
+            await interaction.response.send_message("🚪 艾瑪先退下了，期待下次再見！🌸")
         else:
             await interaction.response.send_message("🌸 我本來就不在頻道裡呀？")
 
@@ -466,4 +482,4 @@ async def setup(bot, ai_engine, music_engine):
     """Cog 載入函數：將 AskCommand 註冊至機器人"""
     new_cog = AskCommand(bot, ai_engine, music_engine)
     await bot.add_cog(new_cog)
-    print(f"✅ [系統日誌] 音樂核心 Cog 已成功載入！(FLAGSHIP VERSION: 400+ lines)")
+    print(f"✅ [系統日誌] 音樂核心 Cog 已成功載入！")
