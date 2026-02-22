@@ -69,15 +69,16 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
-    """精簡版對話攔截邏輯"""
+    """精簡版對話攔截邏輯 - 修正警告版"""
     if message.author == bot.user:
         return
 
-    # 1. 攔截 Slash Command (讓 Slash 處理，這裏直接放手)
-    if message.content.startswith('/') or message.interaction is not None:
+    # 1. 攔截 Slash Command
+    # 修正 DeprecationWarning: 使用 interaction_metadata 代替 interaction
+    if message.content.startswith('/') or message.interaction_metadata is not None:
         return
 
-    # 2. 判斷是否為「標註」或「私訊」，且「排除」傳統指令
+    # 2. 判斷是否為「標註」或「私訊」
     is_mentioned = bot.user.mentioned_in(message)
     is_dm = isinstance(message.channel, discord.DMChannel)
     is_prefixed = message.content.startswith(bot.command_prefix)
