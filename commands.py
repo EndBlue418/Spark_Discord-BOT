@@ -4,6 +4,7 @@ from discord.ext import commands
 import asyncio
 import time
 from lyrics_engine import LyricsEngine
+import os
 
 # --- 1. 音樂控制面板 (按鈕組件) ---
 class MusicControlView(discord.ui.View):
@@ -135,8 +136,19 @@ class AskCommand(commands.Cog):
             # y_title: 永遠攜帶 YouTube 原始標題作為備援
             s_title = spotify_title if spotify_title else source_data['title']
             y_title = source_data['title']
-
-            FFMPEG_EXE = r"C:\Users\李冠霖\暫存\ffmpeg-8.0.1-essentials_build\bin\ffmpeg.exe"
+            # 判斷是否在 Docker 環境中 (檢查 /.dockerenv 檔案)
+            if os.path.exists('/.dockerenv'):
+                FFMPEG_EXE = "ffmpeg"  # Docker 內部直接使用系統指令
+            else:
+                # 妳本機 Windows 的開發路徑
+                FFMPEG_EXE = r"C:\Users\李冠霖\暫存\ffmpeg-8.0.1-essentials_build\bin\ffmpeg.exe"
+            # ✨ --- 修正結束 --- ✨
+            audio_source = discord.FFmpegPCMAudio(
+                source_data['url'],
+                executable=FFMPEG_EXE,
+                before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+                options="-vn"
+            )
             audio_source = discord.FFmpegPCMAudio(
                 source_data['url'],
                 executable=FFMPEG_EXE,

@@ -41,8 +41,8 @@ class SparkBot(commands.Bot):
             from commands import setup as setup_commands
             await setup_commands(self, ai, music)
             await self.tree.sync()
-            print(f"✅ 引擎連動成功！目前核心：{MODEL_ID} (Local)")
-            print(f"🎵 音樂控制面板與佇列系統已準備就緒！")
+            print(f"✅ 引擎連動成功！目前模型：{MODEL_ID} (Local)")
+            print(f"🎵 音樂系統與歌詞系統已準備就緒！")
         except Exception as e:
             print(f"❌ 載入失敗: {e}")
 
@@ -69,7 +69,7 @@ async def on_message(message):
                     await message.reply(answer)
                 except Exception as e:
                     print(f"AI Error: {e}")
-                    await message.reply(f"🌸 嗚...本機引擎目前有點喘，可能要稍等一下喔。")
+                    await message.reply(f"🌸 嗚...本機引擎過載，可能要稍等一下喔。")
 
     await bot.process_commands(message)
 

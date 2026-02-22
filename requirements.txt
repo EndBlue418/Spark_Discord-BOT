@@ -1,0 +1,8 @@
+discord.py
+python-dotenv
+yt-dlp
+spotipy
+ollama
+pykakasi
+discord.py[voice]
+PyNaCl
