@@ -194,8 +194,9 @@ class AskCommand(commands.Cog):
         async def fetch_lyrics_background():
             try:
                 # 執行耗時的歌詞抓取 (在線程池中執行避免阻塞主循環)
-                data, search_logs = await self.bot.loop.run_in_executor(
-                    None, self.lyrics_engine.get_dynamic_lyrics, spotify_title, youtube_title
+                data, search_logs = await self.lyrics_engine.get_dynamic_lyrics(
+                    spotify_title=spotify_title,
+                    youtube_title=youtube_title
                 )
                 if data:
                     data_container['lyrics'] = data
@@ -279,80 +280,110 @@ class AskCommand(commands.Cog):
 
             await asyncio.sleep(0.5)
 
-    def check_queue(self, interaction, vc):
-        """音樂排程管理邏輯 (Music Dispatcher)"""
-        guild_id = interaction.guild_id
-        mode = self.loop_mode.get(guild_id, 0)
-        current = self.current_song.get(guild_id)
-        queue = self.queues.get(guild_id, [])
+    async def check_queue(self, interaction, vc):
+            """音樂排程管理邏輯 (Music Dispatcher)"""
+            # --- 以下內容全部都要縮排 ---
+            guild_id = interaction.guild_id
+            mode = self.loop_mode.get(guild_id, 0)
+            current = self.current_song.get(guild_id)
+            queue = self.queues.get(guild_id, [])
 
-        next_item = None
-        if mode == 1 and current:
-            next_item = current
-            self.bot.dispatch_log(f"🔂 [循環] 單曲循環啟動: {current.get('query')}")
-        elif mode == 2 and current:
-            queue.append(current)
-            if queue:
-                next_item = queue.pop(0)
-            self.bot.dispatch_log(f"🔁 [循環] 清單循環運作中")
-        else:
-            if queue:
-                next_item = queue.pop(0)
+            next_item = None
 
-        if next_item:
-            self.bot.loop.create_task(self.play_music_task(interaction, vc, next_item))
-        else:
-            self.current_song[guild_id] = None
-            self.bot.dispatch_log(f"🏁 [播放結束] {interaction.guild.name} 的隊列已播放完畢。")
+            # 處理循環邏輯
+            if mode == 1 and current:
+                next_item = current
+                await self.bot.dispatch_log(f"🔂 [循環] 單曲循環啟動: {current.get('query')}")
+            elif mode == 2 and current:
+                queue.append(current)
+                if queue:
+                    next_item = queue.pop(0)
+                await self.bot.dispatch_log(f"🔁 [循環] 清單循環運作中")
+            else:
+                if queue:
+                    next_item = queue.pop(0)
+
+            if next_item:
+                # 啟動非同步播放任務
+                self.bot.loop.create_task(self.play_music_task(interaction, vc, next_item))
+            else:
+                self.current_song[guild_id] = None
+                await self.bot.dispatch_log(f"🏁 [播放結束] {interaction.guild.name} 的隊列已播放完畢。")
 
     async def play_music_task(self, interaction, vc, item):
-        """音樂播放主執行任務"""
-        try:
-            guild_id = interaction.guild_id
-            if self.current_song.get(guild_id) and self.current_song.get(guild_id) != item:
-                self.last_played[guild_id] = self.current_song[guild_id]
+            """音樂播放主執行任務"""
+            try:
+                guild_id = interaction.guild_id
 
-            source_data = await self.music.get_yt_source(item['query'])
-            if not source_data:
-                await self.bot.dispatch_log(f"❌ [播放異常] 無法獲取音訊來源：{item['query']}")
-                return
+                # 取得新鮮的串流網址 (這會呼叫我們修正後的 _extract_yt_info)
+                source_data = await self.music.get_yt_source(item['query'])
+                if not source_data:
+                    await self.bot.dispatch_log(f"❌ [播放異常] 無法獲取音訊來源：{item['query']}")
+                    # 失敗了也該嘗試播下一首，以免卡死
+                    self.bot.loop.create_task(self.check_queue(interaction, vc))
+                    return
 
-            item['duration'] = source_data.get('duration', 0)
-            self.current_song[guild_id] = item
-            s_title = item.get('clean_title') or source_data['title']
+                item['duration'] = source_data.get('duration', 0)
+                self.current_song[guild_id] = item
 
-            # FFmpeg 配置 (保持原樣)
-            import shutil
-            FFMPEG_EXE = shutil.which("ffmpeg") or r"C:\Users\李冠霖\暫存\ffmpeg-8.0.1-essentials_build\bin\ffmpeg.exe"
-            FFMPEG_OPTIONS = {
-                'before_options': '-reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 -probesize 10M -analyzeduration 0',
-                'options': '-vn',
-            }
+                # 優先使用 Spotify 乾淨的標題
+                s_title = item.get('clean_title') or source_data['title']
 
-            audio_source = discord.FFmpegPCMAudio(source_data['url'], executable=FFMPEG_EXE, **FFMPEG_OPTIONS)
-            vc.play(audio_source, after=lambda e: self.check_queue(interaction, vc))
+                # FFmpeg 配置
+                import shutil
+                FFMPEG_EXE = shutil.which("ffmpeg") or r"C:\Users\李冠霖\暫存\ffmpeg-8.0.1-essentials_build\bin\ffmpeg.exe"
 
-            # --- 初始發送面板 ---
-            view = MusicControlView(self.bot, vc, self)
-            status = self.get_loop_status(guild_id)
-            embed = discord.Embed(
-                title=f"🌸 伴唱中 | {status}",
-                description=f"**『 {s_title} 』**\n\n🌸 **艾瑪正在準備歌詞，請稍候...**",
-                color=0xffb6c1
-            )
+                # 使用我們剛才優化的強效參數
+                FFMPEG_OPTIONS = {
+                    'before_options': (
+                        '-reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 '
+                        '-reconnect_delay_max 2 '
+                        '-headers "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n" '
+                        '-probesize 10M '
+                        '-analyzeduration 10M '
+                        '-timeout 10000000'
+                    ),
+                    'options': (
+                        '-vn '
+                        '-filter:a "volume=1.0" '
+                        '-af "aresample=async=1" '
+                    ),
+                }
 
-            # 判斷是用回應還是直接發送
-            if not interaction.response.is_done():
-                msg = await interaction.followup.send(embed=embed, view=view)
-            else:
-                msg = await interaction.channel.send(embed=embed, view=view)
+                audio_source = discord.FFmpegPCMAudio(source_data['url'], executable=FFMPEG_EXE, **FFMPEG_OPTIONS)
 
-            # 啟動同步任務
-            if msg:
-                self.bot.loop.create_task(self.lyrics_sync_task(vc, s_title, source_data['title'], msg))
+                # 開始播放
+                vc.play(
+                    audio_source,
+                    after=lambda e: self.bot.loop.create_task(self.check_queue(interaction, vc))
+                )
 
-        except Exception as e:
-            await self.bot.dispatch_log(f"💥 [播放任務崩潰] {e}")
+                # --- 初始發送面板 ---
+                view = MusicControlView(self.bot, vc, self)
+                status = self.get_loop_status(guild_id)
+                embed = discord.Embed(
+                    title=f"🌸 伴唱中 | {status}",
+                    description=f"**『 {s_title} 』**\n\n🌸 **艾瑪正在準備歌詞，請稍候...**",
+                    color=0xffb6c1
+                )
+
+                # 安全地發送訊息
+                try:
+                    if interaction.response.is_done():
+                        msg = await interaction.channel.send(embed=embed, view=view)
+                    else:
+                        msg = await interaction.followup.send(embed=embed, view=view)
+                except:
+                    msg = await interaction.channel.send(embed=embed, view=view)
+
+                # 啟動同步任務 (這裡的 s_title 會讓歌詞引擎第一輪就搜到對的東西)
+                if msg:
+                    self.bot.loop.create_task(self.lyrics_sync_task(vc, s_title, source_data['title'], msg))
+
+            except Exception as e:
+                await self.bot.dispatch_log(f"💥 [播放任務崩潰] {e}")
+                # 發生崩潰時，嘗試拯救隊列
+                self.bot.loop.create_task(self.check_queue(interaction, vc))
 
     # --- 斜線指令部分 ---
     @app_commands.command(name="ask", description="向艾瑪提問任何事 ✨")
@@ -376,7 +407,7 @@ class AskCommand(commands.Cog):
 
         added_count = 0
         if "spotify.com" in input_str:
-            tracks = self.music.get_spotify_tracks(input_str)
+            tracks = await self.music.get_spotify_tracks_async(input_str)
             for t in tracks: self.queues[guild_id].append({'query': t, 'clean_title': t})
             added_count = len(tracks)
         elif "list=" in input_str:
