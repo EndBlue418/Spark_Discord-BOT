@@ -328,10 +328,11 @@ class AskCommand(commands.Cog):
             FFMPEG_EXE = shutil.which("ffmpeg") or "ffmpeg"
 
             # 強化的重連參數，確保網路波動時不會斷掉
+            # --- ✨ 針對 FFmpeg 8.0.1 的相容性優化版 ---
             FFMPEG_OPTIONS = {
                 'before_options': (
-                    '-reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 '
-                    '-reconnect_delay_max 5 -probesize 10M -analyzeduration 10M'
+                    '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 '
+                    '-nostats -loglevel panic' # 💡 移除 probesize 與 analyzeduration，降低解析報錯率
                 ),
                 'options': '-vn -af "volume=1.0,aresample=async=1"'
             }
