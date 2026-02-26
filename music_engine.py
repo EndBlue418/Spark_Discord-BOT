@@ -17,6 +17,8 @@ class SparkMusicEngine:
             'socket_timeout': 10,
             'retries': 5,
             'nocheckcertificate': True,
+            'external_downloader': 'ffmpeg',
+            'external_downloader_args': ['-loglevel', 'panic'],
         }
 
         # 2. 初始化執行緒池 (確保在 get_spotify_tracks_async 呼叫前存在)

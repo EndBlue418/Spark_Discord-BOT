@@ -181,34 +181,37 @@ class AskCommand(commands.Cog):
     async def lyrics_sync_task(self, vc, spotify_title, youtube_title, message):
         """確保歌詞載入後立即推送到面板"""
         guild_id = message.guild.id
-        # 抓取歌曲長度，若無則預設 4 分鐘
-        duration = self.current_song.get(guild_id, {}).get('duration', 0)
+        if not self.current_song.get(guild_id):
+            return
 
-        # 使用字典容器確保異步任務間的數據同步
+        guild_data = self.current_song.get(guild_id, {})
+        duration = guild_data.get('duration', 0)
+
         data_container = {
             'lyrics': {},
             'times': [],
-            'ready': False
+            'ready': False,
+            'failed': False  # ✨ 新增：標記是否抓取失敗
         }
 
         async def fetch_lyrics_background():
             try:
-                # 執行耗時的歌詞抓取 (在線程池中執行避免阻塞主循環)
+                # 這裡會進入你的 LyricsEngine 抓取
                 data, search_logs = await self.lyrics_engine.get_dynamic_lyrics(
                     spotify_title=spotify_title,
                     youtube_title=youtube_title
                 )
-                if data:
+                if data and len(data) > 0:
                     data_container['lyrics'] = data
                     data_container['times'] = sorted(data.keys())
                     data_container['ready'] = True
-                    for entry in search_logs:
-                        await self.bot.dispatch_log(f"🔍 [歌詞搜尋] {entry}")
-                    await self.bot.dispatch_log(f"✅ [同步任務] 歌詞數據已成功寫入，共 {len(data)} 句。")
+                    await self.bot.dispatch_log(f"✅ [同步任務] 歌詞成功載入，共 {len(data)} 句")
                 else:
-                    await self.bot.dispatch_log(f"❌ [同步任務] 找不到這首歌的動態歌詞。")
+                    data_container['failed'] = True
+                    await self.bot.dispatch_log(f"❌ [同步任務] 找不到動態歌詞：{spotify_title}")
             except Exception as e:
-                await self.bot.dispatch_log(f"⚠️ [同步任務失敗] {e}")
+                data_container['failed'] = True
+                await self.bot.dispatch_log(f"⚠️ [同步任務崩潰] {e}")
 
         # 啟動背景抓取
         self.bot.loop.create_task(fetch_lyrics_background())
@@ -217,9 +220,9 @@ class AskCommand(commands.Cog):
         last_second = -1
         display_duration = duration if duration > 0 else 240
 
+        # --- 核心循環 ---
         while vc.is_connected() and (vc.is_playing() or vc.is_paused()):
             if vc.is_paused():
-                # 暫停時補償開始時間，讓進度條停住
                 start_time += 0.5
                 await asyncio.sleep(0.5)
                 continue
@@ -227,41 +230,36 @@ class AskCommand(commands.Cog):
             elapsed = (time.time() - start_time)
             current_second = int(elapsed)
 
-            # 每秒更新一次 UI (或是當歌詞準備好時立即更新)
             if current_second != last_second:
                 last_second = current_second
-
                 status_text = self.get_loop_status(guild_id)
 
-                # --- 核心顯示邏輯 ---
-                if data_container['ready'] and data_container['lyrics']:
-                    # 預設為間奏
+                # --- 歌詞顯示邏輯修正 ---
+                if data_container['ready']:
                     current_sentence = "🎵 **(間奏中)** 🎵"
-                    # 尋找當前時間對應的歌詞
-                    for t in data_container['times']:
+                    # 倒序搜尋，找到「最後一個小於等於現在時間」的歌詞
+                    for t in reversed(data_container['times']):
                         if elapsed >= t:
                             raw_data = data_container['lyrics'][t]
-                            # 處理格式：可能是 [原文, 翻譯] 或 字串
                             if isinstance(raw_data, list):
                                 current_sentence = "\n".join([f"**{str(line).strip()}**" for line in raw_data if line])
                             else:
                                 processed = str(raw_data).replace('|', '\n').replace('\\n', '\n')
                                 current_sentence = f"**{processed}**"
-                        else:
-                            # 找到第一個比現在時間大的就跳出，保留最後一個比現在小的
                             break
+                elif data_container['failed']:
+                    # ✨ 修正：如果失敗了，顯示通知並「終止更新」，節省效能
+                    current_sentence = "🌸 **艾瑪找不到這首歌的動態歌詞呢...**"
                 else:
-                    # 還沒準備好時顯示的預設文字
-                    current_sentence = "🌸 **艾瑪正在同步動態歌詞與翻譯...**"
+                    current_sentence = "🌸 **艾瑪正在努力同步歌詞與翻譯中...**"
 
                 # 進度條渲染
                 bar_len = 14
                 prog = min(elapsed / display_duration, 1.0)
                 filled = int(prog * bar_len)
                 bar_ui = "▬" * filled + "🔘" + "─" * (max(0, bar_len - filled))
-                time_label = f"{self.format_time(elapsed)} / {self.format_time(duration)}" if duration > 0 else self.format_time(elapsed)
+                time_label = f"{self.format_time(elapsed)} / {self.format_time(duration)}"
 
-                # 建立新的 Embed
                 embed = discord.Embed(
                     title=f"🌸 伴唱中 | {status_text}",
                     description=f"**『 {spotify_title} 』**\n\n{current_sentence}\n\n{bar_ui}\n`{time_label}`",
@@ -271,14 +269,16 @@ class AskCommand(commands.Cog):
                 embed.set_footer(text="享受這段旋律吧！ ✨")
 
                 try:
-                    # 每次更新都重新傳入 MusicControlView 確保按鈕狀態（暫停/繼續）即時同步
                     view = MusicControlView(self.bot, vc, self)
                     await message.edit(embed=embed, view=view)
-                except Exception:
-                    # 如果訊息被刪除或出錯則退出循環
+                except:
+                    break # 訊息被刪了就停
+
+                # ✨ 如果失敗了，更新完最後一次「找不到歌詞」的面板後就退出迴圈
+                if data_container['failed']:
                     break
 
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.8) # 稍微放慢更新頻率，減輕手機壓力
 
     async def check_queue(self, interaction, vc):
             """音樂排程管理邏輯 (Music Dispatcher)"""
@@ -337,7 +337,7 @@ class AskCommand(commands.Cog):
                 FFMPEG_OPTIONS = {
                     'before_options': (
                         '-reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 '
-                        '-reconnect_delay_max 2 '
+                        '-reconnect_delay_max 5 ' # 稍微增加重連延遲，給網路一點緩衝
                         '-headers "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n" '
                         '-probesize 10M '
                         '-analyzeduration 10M '
@@ -345,8 +345,8 @@ class AskCommand(commands.Cog):
                     ),
                     'options': (
                         '-vn '
-                        '-filter:a "volume=1.0" '
-                        '-af "aresample=async=1" '
+                        # ✨ 關鍵修改：將 volume 和 aresample 用「逗號」合併，只用一個 -af
+                        '-af "volume=1.0,aresample=async=1" '
                     ),
                 }
 
